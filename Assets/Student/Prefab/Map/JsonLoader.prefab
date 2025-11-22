@@ -44,7 +44,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0ccae118d0e6c6b45b522e58f33d99dc, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  useSecondLevel: 0
+  fileName: jsonmap
   questIndex: 0
   hwallPrefab: {fileID: 246105549799885891, guid: e65178bce96d47847b481a6022fb8024, type: 3}
   vwallPrefab: {fileID: 246105549799885891, guid: 613d578cb6db3c14a94dfcfd7d9339da, type: 3}
