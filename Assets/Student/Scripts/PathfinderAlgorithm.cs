@@ -1,229 +1,195 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
+
 
 public static class PathfindingAlgorithm
 {
-    // Directions for 4-neighbour movement
-    private static readonly Vector2Int[] Directions = new[]
-    {
-        new Vector2Int(1, 0),
-        new Vector2Int(-1, 0),
-        new Vector2Int(0, 1),
-        new Vector2Int(0, -1)
-    };
+    // ======================
+    // --- GRAPH CLASSES ---
+    // ======================
 
-    // Record type for priority queue
-    private class NodeRecord
+    private class Edge
     {
-        public Vector2Int Position;
+        public Vector2Int To;
         public float Cost;
-        public int Id; // tie-breaker so SortedSet allows duplicates
 
-        public NodeRecord(Vector2Int pos, float cost, int id)
+        public Edge(Vector2Int to, float cost)
         {
-            Position = pos;
+            To = to;
             Cost = cost;
-            Id = id;
         }
     }
 
-    // Compare nodes by cost, then by id
-    private class NodeRecordComparer : IComparer<NodeRecord>
+    private class Graph
     {
-        public int Compare(NodeRecord a, NodeRecord b)
+        public Dictionary<Vector2Int, List<Edge>> Adjacency =
+            new Dictionary<Vector2Int, List<Edge>>();
+    }
+
+    // ==========================================
+    // --- GRAPH BUILDER (GENERATES ALL EDGES) ---
+    // ==========================================
+
+    private static Graph BuildGraph(IMapData map)
+    {
+        Graph graph = new Graph();
+
+        for (int x = 0; x < map.Width; x++)
+            for (int y = 0; y < map.Height; y++)
+            {
+                Vector2Int node = new Vector2Int(x, y);
+                graph.Adjacency[node] = new List<Edge>();
+
+                // Normal movement edges (grid neighbors)
+                TryAddEdge(graph, map, node, new Vector2Int(x + 1, y)); // right
+                TryAddEdge(graph, map, node, new Vector2Int(x - 1, y)); // left
+                TryAddEdge(graph, map, node, new Vector2Int(x, y + 1)); // up
+                TryAddEdge(graph, map, node, new Vector2Int(x, y - 1)); // down
+
+                // Vent teleport edges
+                if (map.HasVent(x, y))
+                {
+                    float ventCost = map.GetVentCost(x, y);
+                    foreach (var otherVent in map.GetOtherVentPositions(node))
+                    {
+                        graph.Adjacency[node].Add(new Edge(otherVent, ventCost));
+                    }
+                }
+            }
+
+        return graph;
+    }
+
+    private static void TryAddEdge(Graph graph, IMapData map, Vector2Int from, Vector2Int to)
+    {
+        // Out of bounds
+        if (to.x < 0 || to.y < 0 || to.x >= map.Width || to.y >= map.Height)
+            return;
+
+        // Compute cost using wall rules
+        float cost = GetMovementCost(from, to, map);
+        if (float.IsInfinity(cost))
+            return; // wall blocks movement
+
+        graph.Adjacency[from].Add(new Edge(to, cost));
+    }
+
+    private static float GetMovementCost(Vector2Int from, Vector2Int to, IMapData map)
+    {
+        int dx = to.x - from.x;
+        int dy = to.y - from.y;
+
+        // Horizontal movement → vertical wall between cells
+        if (dx == 1)
+            return map.GetVerticalWallCost(from.x + 1, from.y);
+        if (dx == -1)
+            return map.GetVerticalWallCost(from.x, from.y);
+
+        // Vertical movement -> horizontal wall
+        if (dy == 1)
+            return map.GetHorizontalWallCost(from.x, from.y + 1);
+        if (dy == -1)
+            return map.GetHorizontalWallCost(from.x, from.y);
+
+        return float.PositiveInfinity; // Should never happen
+    }
+
+    // =========================================
+    // --- DIJKSTRA IMPLEMENTATION STARTS HERE ---
+    // =========================================
+
+    private class DNode : System.IComparable<DNode>
+    {
+        public Vector2Int Pos;
+        public float Dist;
+
+        public int CompareTo(DNode other)
         {
-            int c = a.Cost.CompareTo(b.Cost);
-            if (c != 0) return c;
-            return a.Id.CompareTo(b.Id);
+            int cmp = Dist.CompareTo(other.Dist);
+            if (cmp != 0) return cmp;
+
+            // Tie-breaker to avoid SortedSet collisions
+            if (Pos.x != other.Pos.x) return Pos.x.CompareTo(other.Pos.x);
+            return Pos.y.CompareTo(other.Pos.y);
         }
     }
 
     public static List<Vector2Int> FindShortestPath(Vector2Int start, Vector2Int goal, IMapData mapData)
     {
-        // Safety: check inside bounds
-        if (!IsInside(start, mapData) || !IsInside(goal, mapData))
-        {
-            Debug.LogError("Start or goal is outside map bounds.");
-            return null;
-        }
+        Graph graph = BuildGraph(mapData);
 
         var dist = new Dictionary<Vector2Int, float>();
         var prev = new Dictionary<Vector2Int, Vector2Int>();
-
-        var open = new SortedSet<NodeRecord>(new NodeRecordComparer());
-        int idCounter = 0;
+        var pq = new SortedSet<DNode>();
 
         dist[start] = 0f;
-        open.Add(new NodeRecord(start, 0f, idCounter++));
+        pq.Add(new DNode { Pos = start, Dist = 0f });
 
-        while (open.Count > 0)
+        while (pq.Count > 0)
         {
-            // Get node with minimum distance
-            NodeRecord currentRecord = open.Min;
-            open.Remove(currentRecord);
-            Vector2Int current = currentRecord.Position;
+            DNode current = pq.Min;
+            pq.Remove(current);
 
-            // If this is an outdated record, skip it
-            if (!dist.TryGetValue(current, out float currentDist) || currentRecord.Cost > currentDist)
-                continue;
+            Vector2Int u = current.Pos;
 
-            // If we reached the goal, we can stop
-            if (current == goal)
-                break;
+            if (u == goal)
+                return Reconstruct(prev, goal);
 
-            // ----- 1) Normal 4-direction neighbours -----
-            foreach (var dir in Directions)
+            foreach (var edge in graph.Adjacency[u])
             {
-                Vector2Int neighbor = current + dir;
-                if (!IsInside(neighbor, mapData))
-                    continue;
+                float newDist = dist[u] + edge.Cost;
 
-                float stepCost = GetStepCost(current, neighbor, mapData);
-                if (float.IsPositiveInfinity(stepCost))
-                    continue; // impassable (e.g. wall with infinite cost)
-
-                float newDist = currentDist + stepCost;
-
-                if (!dist.TryGetValue(neighbor, out float oldDist) || newDist < oldDist)
+                if (!dist.ContainsKey(edge.To) || newDist < dist[edge.To])
                 {
-                    dist[neighbor] = newDist;
-                    prev[neighbor] = current;
-                    open.Add(new NodeRecord(neighbor, newDist, idCounter++));
-                }
-            }
+                    dist[edge.To] = newDist;
+                    prev[edge.To] = u;
 
-            // ----- 2) Vent teleportation edges -----
-            if (mapData.HasVent(current.x, current.y))
-            {
-                float ventCost = mapData.GetVentCost(current.x, current.y);
-                if (!float.IsPositiveInfinity(ventCost))
-                {
-                    List<Vector2Int> otherVents = mapData.GetOtherVentPositions(current);
-                    foreach (var targetVent in otherVents)
-                    {
-                        float newDist = currentDist + ventCost;
-
-                        if (!dist.TryGetValue(targetVent, out float oldDist) || newDist < oldDist)
-                        {
-                            dist[targetVent] = newDist;
-                            prev[targetVent] = current;
-                            open.Add(new NodeRecord(targetVent, newDist, idCounter++));
-                        }
-                    }
+                    pq.Add(new DNode { Pos = edge.To, Dist = newDist });
                 }
             }
         }
 
-        // No reachable goal?
-        if (!dist.ContainsKey(goal) || float.IsPositiveInfinity(dist[goal]))
-        {
-            Debug.LogWarning("No path found between start and goal.");
-            return null;
-        }
+        Debug.LogWarning("No path found (Dijkstra).");
+        return null;
+    }
 
-        // ----- Reconstruct path from goal back to start -----
+    private static List<Vector2Int> Reconstruct(
+        Dictionary<Vector2Int, Vector2Int> prev,
+        Vector2Int goal
+    )
+    {
         List<Vector2Int> path = new List<Vector2Int>();
-        Vector2Int node = goal;
-        path.Add(node);
+        Vector2Int cur = goal;
 
-        while (node != start)
+        while (prev.ContainsKey(cur))
         {
-            node = prev[node];
-            path.Add(node);
+            path.Add(cur);
+            cur = prev[cur];
         }
 
+        path.Add(cur);
         path.Reverse();
         return path;
     }
 
-    /// <summary>
-    /// Returns true if movement from 'from' to 'to' is blocked
-    /// (outside map or wall with infinite cost).
-    /// Used by GridCharacterMovement and can also help during BFS-steget.
-    /// </summary>
-    public static bool IsMovementBlocked(Vector2Int from, Vector2Int to, IMapData mapData)
+    // ===========================================
+    // --- MOVEMENT BLOCKING (used by character) ---
+    // ===========================================
+
+    public static bool IsMovementBlocked(Vector2Int from, Vector2Int to, IMapData map)
     {
-        // Outside the map? Always blocked.
-        if (!IsInside(to, mapData))
-            return true;
-
-        int dx = Mathf.Abs(to.x - from.x);
-        int dy = Mathf.Abs(to.y - from.y);
-
-        // --- Vent teleport: allow non-adjacent move ONLY if both are vents ---
-        if (dx + dy > 1)
+        // VENT TELEPORT CHECK — allow ANY non-adjacent movement
+        if (map.HasVent(from.x, from.y))
         {
-            // If both cells are vents, this is a legal teleport move.
-            if (mapData.HasVent(from.x, from.y) && mapData.HasVent(to.x, to.y))
-                return false;
-
-            // Any other non-adjacent move is illegal.
-            return true;
+            foreach (var ventTarget in map.GetOtherVentPositions(from))
+            {
+                if (ventTarget == to)
+                    return false; // teleport allowed
+            }
         }
 
-        // --- Normal neighbour step: use wall/cost logic ---
-        float stepCost = GetStepCost(from, to, mapData);
-        return float.IsPositiveInfinity(stepCost);
-    }
-
-
-    // ----- Helpers -----
-
-    private static bool IsInside(Vector2Int p, IMapData mapData)
-    {
-        return p.x >= 0 && p.x < mapData.Width &&
-               p.y >= 0 && p.y < mapData.Height;
-    }
-
-    /// <summary>
-    /// Cost for a single step between two neighbouring cells.
-    /// Handles:
-    ///  - base movement cost 1
-    ///  - extra cost for walls with finite cost
-    ///  - infinite cost for walls that are not climbable
-    /// NOTE: this is for normal steps only; vent teleportation is handled separately.
-    /// </summary>
-    private static float GetStepCost(Vector2Int from, Vector2Int to, IMapData mapData)
-    {
-        int dx = to.x - from.x;
-        int dy = to.y - from.y;
-
-        // Only allow 4-neighbour moves here
-        if (Mathf.Abs(dx) + Mathf.Abs(dy) != 1)
-            return float.PositiveInfinity;
-
-        float baseCost = 1.0f;
-
-        // Horizontal movement -> vertical walls
-        if (dx != 0)
-        {
-            int wallX = dx > 0 ? to.x : from.x;
-            int wallY = from.y;
-
-            float wallCost = mapData.GetVerticalWallCost(wallX, wallY);
-
-            if (float.IsPositiveInfinity(wallCost))
-                return float.PositiveInfinity; // wall cannot be climbed
-
-            if (wallCost > 1.0f)
-                baseCost += wallCost - 1.0f;   // match PathfindingManager logic
-        }
-
-        // Vertical movement -> horizontal walls
-        if (dy != 0)
-        {
-            int wallX = from.x;
-            int wallY = dy > 0 ? to.y : from.y;
-
-            float wallCost = mapData.GetHorizontalWallCost(wallX, wallY);
-
-            if (float.IsPositiveInfinity(wallCost))
-                return float.PositiveInfinity;
-
-            if (wallCost > 1.0f)
-                baseCost += wallCost - 1.0f;
-        }
-
-        return baseCost;
+        // Otherwise use normal wall rules
+        float cost = GetMovementCost(from, to, map);
+        return float.IsInfinity(cost);
     }
 }
