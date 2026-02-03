@@ -4,9 +4,6 @@ using UnityEngine;
 
 public static class PathfindingAlgorithm
 {
-    // ======================
-    // --- GRAPH CLASSES ---
-    // ======================
 
     private class Edge
     {
@@ -25,10 +22,6 @@ public static class PathfindingAlgorithm
         public Dictionary<Vector2Int, List<Edge>> Adjacency =
             new Dictionary<Vector2Int, List<Edge>>();
     }
-
-    // ==========================================
-    // --- GRAPH BUILDER (GENERATES ALL EDGES) ---
-    // ==========================================
 
     private static Graph BuildGraph(IMapData map)
     {
@@ -79,7 +72,7 @@ public static class PathfindingAlgorithm
         int dx = to.x - from.x;
         int dy = to.y - from.y;
 
-        // Horizontal movement → vertical wall between cells
+        // Horizontal movement -> vertical wall between cells
         if (dx == 1)
             return map.GetVerticalWallCost(from.x + 1, from.y);
         if (dx == -1)
@@ -93,10 +86,6 @@ public static class PathfindingAlgorithm
 
         return float.PositiveInfinity; // Should never happen
     }
-
-    // =========================================
-    // --- DIJKSTRA IMPLEMENTATION STARTS HERE ---
-    // =========================================
 
     private class DNode : System.IComparable<DNode>
     {
@@ -171,10 +160,6 @@ public static class PathfindingAlgorithm
         path.Reverse();
         return path;
     }
-
-    // ===========================================
-    // --- MOVEMENT BLOCKING (used by character) ---
-    // ===========================================
 
     public static bool IsMovementBlocked(Vector2Int from, Vector2Int to, IMapData map)
     {
